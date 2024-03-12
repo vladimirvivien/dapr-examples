@@ -69,3 +69,6 @@ func handleOrder(ctx context.Context, in *common.InvocationEvent) (out *common.C
 }
 
 ```
+
+### Building code with Ko
+To keep things simple, the code can be built using Ko
