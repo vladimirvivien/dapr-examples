@@ -40,8 +40,9 @@ func main() {
 func postOrder(w http.ResponseWriter, r *http.Request) {
 	daprClient, err := dapr.NewClient()
 	if err != nil {
-		log.Printf("dapr client: NewClientWitPort: %s", err)
+		log.Printf("dapr client: NewClient: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
+		return
 	}
 	defer daprClient.Close()
 
@@ -49,22 +50,26 @@ func postOrder(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&receivedOrder); err != nil {
 		log.Printf("order decoder: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
+		return
 	}
 
 	orderID := fmt.Sprintf("order-%x", rand.Int31())
 	receivedOrder.ID = orderID
 	receivedOrder.Completed = true
+	log.Printf("order received: [orderid=%s]", orderID)
 
 	// marshal order for downstream processing
 	orderData, err := json.Marshal(receivedOrder)
 	if err != nil {
 		log.Printf("order data: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
+		return
 	}
 
 	if err := daprClient.SaveState(context.Background(), stateStore, orderID, orderData, nil); err != nil {
 		log.Printf("dapr save state: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

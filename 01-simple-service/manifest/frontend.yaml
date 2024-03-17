@@ -13,6 +13,9 @@ spec:
     metadata:
       labels:
         app: frontendsvc
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id:  "frontendsvc"
     spec:
       containers:
         - name: frontendsvc
