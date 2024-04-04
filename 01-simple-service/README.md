@@ -1,46 +1,55 @@
-## Simple service invocation
+## Simple service with state management
+This example shows how to create a simple service (`frontendsvc`) that exposes an HTTP endpoint to post JSON data. Then, the posted data is saved into a Dapr-managed state store component backed by an in-cluster Redis key/value data store.
 
-This directory contains a simple example that shows how to create a service invocation handler using the 
-Dapr API.  The service (`ordersvc`) is setup to listen for incoming HTTP POST requests with JSON payload.
-For this introductory example, the code simply returns a response acknowledging that the order has been created.
+![Simple service](./01-dapr-datastore.png)
 
-### The service
+### Configuration
 
-The `main` function creates the entry point for the service. Notice that the code is using Dapr's `http` package instead of the standard library's. 
+The configuration for this service includes:
+* A Kubernetes [deployment](./manifest/frontend.yaml) manifest 
+* A Dapr component for a [Redis data store](./manifest/redis-store.yaml).
+
+
+### The Go HTTP service
+
+The service is written in Go and it implements a simple HTTP endpoint using the `net/http` package from the standard library. 
+
 
 ```go
 package main
 
-import (
-    ...
-	"github.com/dapr/go-sdk/service/common"
-	"github.com/dapr/go-sdk/service/http"
+var (
+	appPort    = os.Getenv("APP_PORT")
+	stateStore = "orders-store"
 )
 
+
 func main() {
-	// Setup service port
-	port := os.Getenv("APP_PORT")
-	if port == "" {
-		port = "8080"
+	if appPort == "" {
+		appPort = "8080"
 	}
+	log.Printf("frontend: starting service: port %s", appPort)
 
-    // Create new service instance
-	service := http.NewService(fmt.Sprintf(":%s", port))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /orders/new", postOrder)
 
-	// Register handler for service endpoint
-	service.AddServiceInvocationHandler("/orders", handleOrder)
-
-	// Start service
-	log.Printf("Starting order service on port %s ...", port)
-	if err := service.Start(); err != nil {
-		log.Fatalf("error starting service: %s", err)
+	if err := http.ListenAndServe(":"+appPort, mux); err != nil {
+		log.Fatalf("frontend: %s", err)
 	}
 }
 ```
 
-### The service handler
 
-In this example, the service handler is a simple function with signature `func (context.Context, *common.InvocationEvent) (*common.Content, error)`. The handler receives incoming service invocation arguments via variable `in` containing everything needed to handle the request.
+#### The HTTP handler
+
+In this example, the HTTP handler does the followings:
+
+* Receives and decode the JSON-encoded into a value of type `Order`
+* Generate and assign an order ID
+* Update the order's `Completed` field
+* Create a `dapr.Client` and use it to store order into the configured Redis data store
+
+The following code snippet shows how that works:
 
 ```go
 type Order struct {
@@ -49,26 +58,118 @@ type Order struct {
 	Completed bool
 }
 ...
-func handleOrder(ctx context.Context, in *common.InvocationEvent) (out *common.Content, err error) {
-	// Decode received order
+func postOrder(w http.ResponseWriter, r *http.Request) {
+	daprClient, err := dapr.NewClient()
+	...
+	defer daprClient.Close()
+
 	var receivedOrder Order
-	if err := json.Unmarshal(in.Data, &receivedOrder); err != nil {
-		return nil, fmt.Errorf("/orders: decode new order: %s", err)
-	}
+	json.NewDecoder(r.Body).Decode(&receivedOrder)
+	orderID := fmt.Sprintf("order-%x", rand.Int31())
+	receivedOrder.ID = orderID
+	receivedOrder.Completed = true
+	log.Printf("order received: [orderid=%s]", orderID)
 
-	// Order received
-	orderID := "order-" + fmt.Sprintf("%x", rand.Int31())
-	order := fmt.Sprintf(`{"order":"%s", "status":"received"}`, orderID)
-	log.Printf("/orders: order received: %s", order)
+	// save data as JSON
+	orderData, err := json.Marshal(receivedOrder)
+	daprClient.SaveState(context.Background(), stateStore, orderID, orderData, nil)
 
-	// return handler result
-	return &common.Content{
-		ContentType: "application/json",
-		Data:        []byte(order),
-	}, nil
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"order":"%s", "status":"received"}`, orderID)
 }
 
 ```
 
-### Building code with Ko
-To keep things simple, the code can be built using Ko
+### Building the container image with ko
+The code can be compiled and packaged as an OCI-compliant image using `ko` (note: update the `--platform` flag to match your environment):
+
+```
+ko build --local -B --platform=linux/arm64 ./frontendsvc
+```
+
+Next, check to see if the images are in your local repository:
+
+```
+docker images
+
+REPOSITORY             TAG              IMAGE ID       CREATED         SIZE
+ko.local/frontendsvc   latest           6094bfc88ad3   2 days ago      16.9MB
+```
+
+Next, add the built image into your local Kind cluster:
+
+```
+kind load docker-image ko.local/frontendsvc:latest --name dapr-cluster
+```
+
+### Deploy the service
+The next step is to deploy the application to the Kubernetes cluster:
+
+```
+kubectl apply -f ./manifest
+```
+
+Use the `kubectl` command to verify the deployment:
+
+First, ensure the Dapr components are deployed properly in the cluster:
+
+```
+kubectl get components
+
+NAME           AGE
+orders-store   72m
+```
+
+Ensure services and application is deployed on the cluster:
+
+```
+kubectl get deployments -l app=frontendsvc -o wide
+
+NAME          READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS    IMAGES                        SELECTOR
+frontendsvc   1/1     1            1           75m   frontendsvc   ko.local/frontendsvc:latest   app=frontendsvc
+```
+
+Also check that there are 2 containers running in the application pod (one for the app and the other for the Dapr sidecar):
+
+```
+kubectl get pods -l app=frontendsvc
+NAME                           READY   STATUS    RESTARTS   AGE
+frontendsvc-7c6bb8bf87-kpgvk   2/2     Running   0          3m3s
+```
+
+
+### Running the service
+To keep the service configuration simple, we're going to use the Kubernetes port forwarding to access the HTTP endpoint of the service.
+
+```
+kubectl port-forward deployment/frontendsvc 8080
+
+Forwarding from 127.0.0.1:8080 -> 8080
+Forwarding from [::1]:8080 -> 8080
+```
+
+Next, use `curl` to post an order to the frontendsvc endpoint:
+
+```
+curl -i -d '{ "items": ["automobile"]}'  -H "Content-type: application/json" "http://localhost:8080/orders/new"
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Thu, 04 Apr 2024 00:54:21 GMT
+Content-Length: 47
+
+{"order":"order-4d3d076e", "status":"received"}
+```
+
+The result is a JSON payload showing the status of the order: 
+
+Next, we can use endpoint `http://localhost:8080/orders/order/{id}` to retrieve the order from the backend state store:
+
+```
+curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-4d3d076e"
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Thu, 04 Apr 2024 00:55:45 GMT
+Content-Length: 63
+
+{"ID":"order-4d3d076e","Items":["automobile"],"Completed":true
+```

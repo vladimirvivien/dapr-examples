@@ -64,7 +64,7 @@ nodes:
 - role: worker
 ```
 
-Then, the following command creates a cluster name `dapr-cluster`:
+Then, use the following command to launch a cluster name `dapr-cluster`:
 
 ```
 kind create cluster --config ./configs/kind-cluster.yaml --name dapr-cluster
@@ -101,9 +101,10 @@ You will need the Go build tools to compile the example code in this repository.
 * Find and [install the latest Go tools](https://go.dev/doc/install)
 
 ### Install Ko
-Ko is a container image builder for Go applications. 
+`ko` is a command-line tool that can be used to build Go source code into OCI-compliant images. 
 
 * [Install ko](https://ko.build/install/) on your machine
+* Learn how to [build and publish lighweight containers with `ko`](https://medium.com/@vladimirvivien/build-and-publish-lightweight-go-container-images-with-ko-2896a4f8543b)
 
 ### Install Helm
 You will need heml to install certain components used in the examples. 
@@ -111,9 +112,11 @@ You will need heml to install certain components used in the examples.
 * Install [helm](https://helm.sh/docs/intro/install/) locally.
 
 ### Install Redis
-The examples use Redis for both Dapr storage management component and publish/subscribe component. Note that Dapr makes it easy to easily swap out Redis for your preferred data platform as the backing for these components.  See [Dapr Components](https://docs.dapr.io/operations/components/) for detail.
+The examples use Redis for both Dapr storage management component and publish/subscribe component. Note that Dapr makes it easy to swap out Redis for your preferred data platform as the backing for these components.  
 
-Use helm to install Redis locally.
+See [Dapr Components](https://docs.dapr.io/operations/components/) for detail.
+
+Let's use Helm to install Redis locally.
 
 ```
 helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -121,11 +124,11 @@ helm repo update
 helm install redis bitnami/redis
 ```
 
-## Building the source and loading Docker images
-To simplify the local setup, the exampels rely on the `ko` command-line tool to build and generate `Docker` images from the Go source code.
+## Building the source code and loading Docker images
+To simplify the local setup, the examples use the `ko` command-line tool to build and publish `Docker` images from the Go source code.
 
-### Compile with ko
-You can use `Ko` to compile the source code and automatically push the built image into your local Docker repository. For instance, the following builds code found in package `frontendsvc`:
+### Compile and publish images with ko
+You can use `Ko` to compile the source code and automatically push the built image into your local Docker repository. For instance, the following builds the source code in package `frontendsvc` and publishes the container image to a local repo:
 
 
 ```
@@ -133,6 +136,8 @@ You can use `Ko` to compile the source code and automatically push the built ima
 ko build --local -B --platform=linux/arm64 frontendsvc/front.go
 ```
 The previous step will build and publish an images to the local repository. Notice the optional `--platform` argument to specify the platform for the image to build. 
+
+Next, check to see if the images are in your local repository:
 
 ```
 docker images
@@ -148,7 +153,7 @@ This step loads the built Docker image into Kind's internal image repository:
 kind load docker-image ko.local/frontendsvc:latest --name dapr-cluster
 ```
 
-As an optional step, you can verify that the image is loaded into Kind's internal repository as follows (assuming dapr-cluster as a Kind cluster name):
+As an optional step, you can verify that the image is loaded into Kind's internal repository as follows (assuming `dapr-cluster` is a Kind cluster):
 
 ```
 docker exec -it dapr-cluster-control-plane crictl images
@@ -162,7 +167,7 @@ ko.local/frontendsvc    latest               1a4f9a427a625       17.4MB
 ## Running examples
 The examples in this repository are designed to showcase the diverse components and building blocks of Dapr. Each example directory includes a `manifest` directory that contains the YAML configuration for Kubernetes components and services.
 
-### Deploying example service
+### Deploying example application
 One of the first steps to run the service is to deploy it unto the Kubernetes cluster.
 
 ```
@@ -174,7 +179,7 @@ kubectl apply -f ./manifest
 ### Verify service deployments 
 You can use the `kubectl` command to verify the deployment of the different components included in the examples.
 
-First, ensure the Dapr components are deployed properly in the cluster:
+First, ensure the Dapr components (for the example) are deployed properly in the cluster:
 
 ```
 kubectl get components
@@ -192,6 +197,14 @@ NAME          READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS    IMAGES       
 frontendsvc   1/1     1            1           75m   frontendsvc   ko.local/frontendsvc:latest   app=frontendsvc
 ```
 
+When deploying a Dapr-backed application, you should ensure its pod has 2 or more) containers running (one for your application and the other for the Dapr sidecar):
+
+```
+kubectl get pods -l app=frontendsvc
+NAME                           READY   STATUS    RESTARTS   AGE
+frontendsvc-7c6bb8bf87-kpgvk   2/2     Running   0          3m3s
+```
+
 ## Troubleshooting
 Deploying Dapr-backed services can be complex and may not work the first time.  To save you time, I have gathered some of the troubleshooting steps that can help you identify issues with deploying Dapr services on Kubernetes.
 
@@ -204,9 +217,9 @@ Sometimes your code changes may not be reflected in the cluster. There can be ma
 * If all else fails, delete images from local repository, recompile, and republish
 
 ### Dapr sidecar not injected
-During initial setup of the many tools needed, it's possible that the Dapr components are installed after you've deployed your causing the Dapr sidecar not to be injected properly.
+During initial setup of the many tools needed, it's possible that the Dapr control plane is not injecting the Dapr side car container properly.
 
-After your deployment is completed, ensure the Dapr sidecar is being injected into the pod for your pod:
+After your deployment is completed, ensure the Dapr sidecar is being injected into the pod for your application:
 
 ```
 kubectl logs -l app=dapr-sidecar-injector -n dapr-system
@@ -245,7 +258,42 @@ Containers:
       /daprd
 ...
 ```
+### Clean container images locally
+As you make updates and republish the container images for the code, you will accumulate images in the local repository. You can clean them as follows.
+
+First, clean images from the container repository (showing Docker)
+
+```
+docker rmi -f <image hash>
+```
+
+Clean images from within the Kind cluster. First list the images:
+
+```
+docker exec -it dapr-cluster-control-plane crictl images
+```
+
+Remove the old images from the Kind cluster:
+
+```
+docker exec -it dapr-cluster-control-plane crictl rmi <image hash>
+```
+
+### Application logs
+When troubleshooting your Dapr application, it is useful to access logs from different components running in the cluster.
+
+The following will shows the last 100 logs for application `frontendsvc`:
+
+```
+kubectl logs -l app=frontendsvc -c frontendsvc --tail=100
+```
+
+The same approach can be used to see what's going on in the `daprd`, the Dapr sidecar container injected in the the application's pod:
+
+```
+kubectl logs -l app=frontendsvc -c daprd --tail=100
+```
 
 ## Examples
 
-* 01-simple-service - A simple HTTP service that saves data into a Dapr-managed data store
+* [01-simple-service](./01-simple-service/) - A simple HTTP service that uses a Dapr-managed data store to save state
