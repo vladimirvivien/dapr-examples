@@ -210,6 +210,7 @@ Next, let's use `curl` to post an order to the `frontendsvc` endpoint:
 
 ```bash
 curl -i -d '{ "items": ["automobile"]}'  -H "Content-type: application/json" "http://localhost:8080/orders/new"
+
 HTTP/1.1 200 OK
 Content-Type: application/json
 Date: Thu, 04 Apr 2024 00:54:21 GMT
@@ -226,6 +227,7 @@ Next, let's use endpoint `http://localhost:8080/orders/order/{id}` to retrieve t
 
 ```
 curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-4d3d076e"
+
 HTTP/1.1 200 OK
 Content-Type: application/json
 Date: Thu, 04 Apr 2024 00:55:45 GMT
@@ -235,5 +237,20 @@ Content-Length: 63
 The result is JSON-encoded data about the retrieved order:
 
 ```json
-{"ID":"order-4d3d076e","Items":["automobile"],"Completed":true
+{"ID":"order-4d3d076e","Items":["automobile"],"Completed":true}
+```
+
+### Troubleshooting
+If you run into errors or the order is not getting created properly, you can follow these troubleshooting steps to figure out what's going on.
+
+Review the Dapr sidecar container logs for the services
+
+```
+kubectl logs -l app=frontend -c daprd
+```
+
+Review the logs for the application services
+
+```
+kubectl logs -l app=frontend 
 ```

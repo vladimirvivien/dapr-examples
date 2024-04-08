@@ -1,121 +1,109 @@
-## Saving application state
+## Invoke Dapr-managed services
 
-This example demonstrates how to build stateful applications using the [State Management](https://docs.dapr.io/developing-applications/building-blocks/state-management/) feature of Dapr to store application data in a key/value data store. 
+This example demonstrates how to create and deploy a Dapr-managed service that can be invoked from the `frontend` application. 
+
+### Pre-requisites
+Refer to example [01-state-management](../01-state-management/README.md) for an introduction on how to setup the the `frontend` application.
 
 ### The Go application
 
-The Go application exposes two endpoints:
-* `/orders/new` - to create a new order
-* /orders/get/{id} - to retrieve order information
+In the previous [example](../01-state-management/), application `frontend` was setup with two endpoints: 
+- One endpoint to save an order 
+- The other endpoint to retrieve a saved order
 
-The Go source code makes use of the Dapr API to seamlessly connect to a configured key/value store, (in this case Redis) deployed in the cluster, to store and retrieve application data.
+In the previous example, the application's code handles all of the logic necessary to drive the order in one function.
 
-![Simple service](./01-dapr-datastore.png)
+This example, however, extracts the functionality that generates the order ID and places it in a new stand-alone service called `genid`. 
+Now, when an order request is received, the frontendsvc application will invoke the `genidsvc` service using the Dapr Service Invocation feature,
+to gegnerate a UUID value that can subsequently be used as the order id. 
+
+![Simple service](./02-dapr-invoke-service.png)
 
 
-### The source code
+### The `genid` service source code
 
-The code is simple and uses `net/http` package to create a simple HTTP-based application that accepts HTTP requests at two endpoints. Let's see how that works.
+The code for this example uses the Dapr API to declare and start a service endpoint. Let's see how that is done below.
 
 First, let's define some variables and types:
 
 ```go
 var (
-	appPort    = os.Getenv("APP_PORT") // application port
-	stateStore = "orders-store"        // Dapr ID for the configured data store
-	daprClient dapr.Client
+	appPort    = os.Getenv("APP_PORT") // service port
 )
-
-// Order type to store incoming order
-type Order struct {
-	ID        string
-	Items     []string
-	Completed bool
-}
 ```
 
-The following code snippet defines the HTTP endpoints and starts the server:
+The next code snippet defines and start the service using the Dapr API.:
 
 ```go
 func main() {
-	if appPort == "" {
-		appPort = "8080"
+	dapr := daprd.NewService(fmt.Sprintf(":%s", appPort))
+
+	// Define service endpoint /genid
+	if err := dapr.AddServiceInvocationHandler("/genid", generateId); err != nil {
+		log.Fatalf("genid: invocation handler setup: %v", err)
 	}
 
-	dc, err := dapr.NewClient()
-	...
-	daprClient = dc
-	defer daprClient.Close()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /orders/new", postOrder)
-	mux.HandleFunc("GET /orders/order/{id}", getOrder)
-
-	if err := http.ListenAndServe(":"+appPort, mux); err != nil {
-		log.Fatalf("frontend: %s", err)
+	// start the service
+	if err := dapr.Start(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("genid start: %v", err)
 	}
+}
 ```
 
-Lastly, the followings defines the HTTP handlers referenced earlier. 
+Lastly, let's define the service handler that generates the ID as a UUID value. 
 
-The first snippets implements a handler for endpoint `/order/new` to handle order HTTP post requests:
+```go
+func generateId(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
+	id := uuid.New()
+	out := &common.Content{
+		Data:        []byte(id.String()),
+		ContentType: in.ContentType,
+		DataTypeURL: in.DataTypeURL,
+	}
+
+	return out, nil
+}
+```
+
+### Update to the `frontendsvc` application
+
+The code in the `frontendsvc` application must be updated to use the `genidsvc` to generate the ID for the order. 
+
+First, let's declare the name of the `genidsvc` service so it can be invoked later.
+
+```go
+var (
+	genidsvcId = "genidsvc"
+	...
+)
+```
+
+Next, let's update the code in `frontendsvc` to use the Dapr Client API to invoke remote service.
+This is done using the `daprClient.InvokeMethod` method call that takes the name/id of the Dapr-registered
+service as an argument as shown in the snippet below:
 
 ```go
 func postOrder(w http.ResponseWriter, r *http.Request) {
-	var receivedOrder Order
-	if err := json.NewDecoder(r.Body).Decode(&receivedOrder); err != nil {
-		http.Error(w, "unable to post order", http.StatusInternalServerError)
-		return
-	}
-
-	orderID := fmt.Sprintf("order-%x", rand.Int31())
-	receivedOrder.ID = orderID
-	receivedOrder.Completed = true
-
-	// marshal order for downstream processing
-	orderData, err := json.Marshal(receivedOrder)
+	...
+	// invoke genidsvc service to generate order UUID
+	out, err := daprClient.InvokeMethod(r.Context(), genidsvcId, "genid", "get")
 	if err != nil {
+		log.Printf("order genid: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
 		return
 	}
-
-	// Use Dapr state management API to save application state
-	// Use the orderId as key to save value as JSON-encoded binary
-	if err := daprClient.SaveState(r.Context(), stateStore, orderID, orderData, nil); err != nil {
-		http.Error(w, "unable to post order", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"order":"%s", "status":"received"}`, orderID)
+	orderID := fmt.Sprintf("order-%s", string(out))
+	...
 }
+
 ```
 
-The next snippet defines a HTTP handler for endpoint `/orders/get/{id}` to retrieve order data:
-
-```go
-func getOrder(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	// Use Dapr state management API to retrieve order by key
-	data, err := daprClient.GetState(r.Context(), stateStore, id, nil)
-	if err != nil {
-		log.Printf("get order data: %s", err)
-		http.Error(w, "unable to get order", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, string(data.Value))
-}
-```
-
-
-### Building the container image with ko
-The code can be compiled and packaged as an OCI-compliant image using `ko` (note: update the `--platform` flag to match your environment):
+### Building the containers with `ko`
+Nowe we can create OCI-compliant images using `ko` (note: update the `--platform` flag to match your environment):
 
 ```
 ko build --local -B --platform=linux/arm64 ./frontendsvc
+ko build --local -B --platform=linux/arm64 ./genidsvc
 ```
 
 Next, check to see if the images are in your local repository:
@@ -124,23 +112,35 @@ Next, check to see if the images are in your local repository:
 docker images
 
 REPOSITORY             TAG              IMAGE ID       CREATED         SIZE
-ko.local/frontendsvc   latest           6094bfc88ad3   2 days ago      16.9MB
+ko.local/frontendsvc   latest           78e50b346643   10 days ago     17.2MB
+ko.local/genidsvc      latest           a957b45ffa1d   10 days ago     17.4MB
 ```
 
-Next, add the built image into your local Kind cluster:
+Next, add the latest built image into your local Kind cluster:
 
 ```
 kind load docker-image ko.local/frontendsvc:latest --name dapr-cluster
+kind load docker-image ko.local/genidsvc:latest --name dapr-cluster
+```
+
+Lastly, let's ensure the latest images are added to Kind:
+
+```
+docker exec -it dapr-cluster-control-plane crictl images
+
+IMAGE                  TAG                  IMAGE ID            SIZE
+ko.local/frontendsvc   latest               78e50b346643d       17.7MB
+ko.local/genidsvc      latest               a957b45ffa1dc       17.9MB
 ```
 ### Kubernetes configuration
+In this example, we will have three YAML configurations to deploy:
+* A Kubernetes [Deployment](./manifest/frontend.yaml) manifest for `frontendsvc`
+* A Kubernetes [Deployment](./manifest/genid.yaml) manifest for `genidsvc`
+* A Dapr Component for a [Redis data store](./manifest/redis-store.yaml).
 
-The configurations to run this example you will need:
-* A Kubernetes [Deployment](./manifest/frontend.yaml) manifest 
-* A Dapr component for a [Redis data store](./manifest/redis-store.yaml).
+Because application services `frontendsvc` and `genidsvc` use the Dapr API directly, their Kubernetes deployments must include the Dapr sidecar at runtime.
 
-Because the code invokes the Dapr API, the application must be deployed along with the Dapr sidecar at runtime. You can read more about running Dapr-enabled applications on Kubernetes [here](https://docs.dapr.io/operations/hosting/kubernetes/).
-
-To enable the Dapr sidecar during deployment, you need to annotate your Kubernetes `Deployment` appropriately with Dapr metadata as shown in the following snippet:
+The following shows a snippet for the [`frontendsvc`](./manifest/frontend.yaml) application that includes annotations that will cause the injection of the Dapr runtime sidecar container:
 
 ```yaml
 kind: Deployment
@@ -156,8 +156,33 @@ spec:
         dapr.io/enabled: "true"
         dapr.io/app-id:  "frontendsvc"
 ```
+Similarly, the deployment for the `genidsvc` service includes annotations for its Dapr sidecar.
+Note the `dapr.io/app-port: "5050"`: this is to configure the sidecar to be able to reach the `genidsvc` service on its listening port.
+The annotation `app-port` value matches the exposed port of the application's  `containerPort value` as shown below.
 
-You can see a full list of Dapr annotations [here](https://docs.dapr.io/reference/arguments-annotations-overview/).
+```yaml
+kind: Deployment
+metadata:
+  name: genidsvc
+spec:
+...
+  template:
+    metadata:
+      labels:
+        app: genidsvc
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id:  "genidsvc"
+        dapr.io/app-port: "5050"
+    spec:
+      containers:
+        - name: genidsvc
+          image: ko.local/genidsvc:latest
+          ports:
+            - containerPort: 5050
+```
+
+You can read more about running Dapr-enabled applications on Kubernetes [here](https://docs.dapr.io/operations/hosting/kubernetes/).
 
 ### Deploy the application
 The next step is to deploy the application to the Kubernetes cluster:
@@ -186,14 +211,22 @@ kubectl get deployments -l app=frontendsvc -o wide
 
 NAME          READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS    IMAGES                        SELECTOR
 frontendsvc   1/1     1            1           75m   frontendsvc   ko.local/frontendsvc:latest   app=frontendsvc
+
+kubectl get deployments -l app=genidsvc -o wide
+NAME       READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                     SELECTOR
+genidsvc   1/1     1            1           46s   genidsvc     ko.local/genidsvc:latest   app=genidsvc
 ```
 
-Also check that there are 2 containers running in the application pod (one for the app and the other for the Dapr sidecar):
+Lastly, let's check that there are 2 containers running in the deployed application pods (one for the app and the other for the Dapr sidecar):
 
 ```
 kubectl get pods -l app=frontendsvc
 NAME                           READY   STATUS    RESTARTS   AGE
 frontendsvc-7c6bb8bf87-kpgvk   2/2     Running   0          3m3s
+
+kubectl get pods -l app=genidsvc
+NAME                       READY   STATUS    RESTARTS   AGE
+genidsvc-74b5459ff-mbh6r   2/2     Running   0          2m9
 ```
 
 ### Running the application
@@ -210,30 +243,50 @@ Next, let's use `curl` to post an order to the `frontendsvc` endpoint:
 
 ```bash
 curl -i -d '{ "items": ["automobile"]}'  -H "Content-type: application/json" "http://localhost:8080/orders/new"
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Date: Thu, 04 Apr 2024 00:54:21 GMT
-Content-Length: 47
+Date: Mon, 08 Apr 2024 13:01:31 GMT
+Content-Length: 75
 ```
 
-The result is a JSON payload showing the status of the order: 
+The result is a JSON payload showing the status of the order.
+Note that the order id has now UUID suffix attached to it now.
 
 ```json
-{"order":"order-4d3d076e", "status":"received"}
+{"order":"order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b", "status":"received"}
 ```
 
 Next, let's use endpoint `http://localhost:8080/orders/order/{id}` to retrieve the order from the state store:
 
 ```
-curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-4d3d076e"
+curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b"
+
 HTTP/1.1 200 OK
 Content-Type: application/json
-Date: Thu, 04 Apr 2024 00:55:45 GMT
-Content-Length: 63
+Date: Mon, 08 Apr 2024 13:16:46 GMT
+Content-Length: 91
 ```
 
-The result is JSON-encoded data about the retrieved order:
+The result is a JSON-encoded data for the order:
 
 ```json
-{"ID":"order-4d3d076e","Items":["automobile"],"Completed":true
+{"ID":"order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b","Items":["automobile"],"Completed":true}
+```
+
+### Troubleshooting
+If you run into errors or the order is not getting created properly, you can follow these troubleshooting steps to figure out what's going on.
+
+Review the Dapr sidecar container logs for the services
+
+```
+kubectl logs -l app=frontend -c daprd
+kubectl logs -l app=genidsvc -c daprd
+```
+
+Review the logs for the application services
+
+```
+kubectl logs -l app=frontend 
+kubectl logs -l app=genidsvc
 ```

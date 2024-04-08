@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genidsvc
+  labels:
+    app: genidsvc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genidsvc
+  template:
+    metadata:
+      labels:
+        app: genidsvc
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id:  "genidsvc"
+        dapr.io/app-port: "5050"
+    spec:
+      containers:
+        - name: genidsvc
+          image: ko.local/genidsvc:latest
+          ports:
+            - containerPort: 5050
+          env:
+            - name: APP_PORT
+              value: "5050"
+          imagePullPolicy: IfNotPresent

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/dapr/go-sdk/service/common"
@@ -16,18 +18,23 @@ var (
 
 func main() {
 	if appPort == "" {
-		appPort = "8080"
+		appPort = "5050"
 	}
 
-	dapr := daprd.NewService(":8080")
+	dapr := daprd.NewService(fmt.Sprintf(":%s", appPort))
 
-	// Define service at endpoint /genid
+	// Define service endpoint /genid
 	if err := dapr.AddServiceInvocationHandler("/genid", generateId); err != nil {
 		log.Fatalf("genid: invocation handler setup: %v", err)
 	}
 
+	// start the service
+	if err := dapr.Start(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("genid start: %v", err)
+	}
 }
 
+// generateId service handler
 func generateId(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
 	id := uuid.New()
 	out := &common.Content{
