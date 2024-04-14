@@ -1,4 +1,4 @@
-## Invoke Dapr-managed services
+## Dapr Publish/Subscribe
 
 This example demonstrates how to create and deploy a Dapr-managed service that can be invoked from the `frontend` application. 
 
@@ -121,6 +121,7 @@ Next, add the latest built image into your local Kind cluster:
 ```
 kind load docker-image ko.local/frontendsvc:latest --name dapr-cluster
 kind load docker-image ko.local/genidsvc:latest --name dapr-cluster
+kind load docker-image ko.local/orderprocsvc:latest --name dapr-cluster
 ```
 
 Lastly, let's ensure the latest images are added to Kind:
@@ -251,7 +252,7 @@ Content-Length: 75
 ```
 
 The result is a JSON payload showing the status of the order.
-Note that the ID for the order has a UUID suffix attached to it now.
+Note that the order id has now UUID suffix attached to it now.
 
 ```json
 {"order":"order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b", "status":"received"}

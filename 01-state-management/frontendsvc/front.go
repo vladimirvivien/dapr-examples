@@ -9,6 +9,7 @@ import (
 	"os"
 
 	dapr "github.com/dapr/go-sdk/client"
+	"github.com/vladimirvivien/daprexamples/types"
 )
 
 var (
@@ -17,12 +18,6 @@ var (
 
 	daprClient dapr.Client
 )
-
-type Order struct {
-	ID        string
-	Items     []string
-	Completed bool
-}
 
 func main() {
 	if appPort == "" {
@@ -48,7 +43,7 @@ func main() {
 }
 
 func postOrder(w http.ResponseWriter, r *http.Request) {
-	var receivedOrder Order
+	var receivedOrder types.Order
 	if err := json.NewDecoder(r.Body).Decode(&receivedOrder); err != nil {
 		log.Printf("order decoder: %s", err)
 		http.Error(w, "unable to post order", http.StatusInternalServerError)
@@ -57,6 +52,7 @@ func postOrder(w http.ResponseWriter, r *http.Request) {
 
 	orderID := fmt.Sprintf("order-%x", rand.Int31())
 	receivedOrder.ID = orderID
+	receivedOrder.Received = true
 	receivedOrder.Completed = true
 	log.Printf("order received: [orderid=%s]", orderID)
 
