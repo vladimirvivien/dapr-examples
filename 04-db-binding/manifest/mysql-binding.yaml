@@ -1,0 +1,10 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: orders-mysql
+spec:
+  type: bindings.mysql
+  version: v1
+  metadata:
+  - name: url # Note: mysql Component does not seem to use Kubernetes secrets directly
+    value: "root:TJOgCPURyD@tcp(my-release-mysql.default.svc.cluster.local:3306)/orders"

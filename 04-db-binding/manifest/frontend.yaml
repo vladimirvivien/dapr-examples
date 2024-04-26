@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontendsvc
+  labels:
+    app: frontendsvc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontendsvc
+  template:
+    metadata:
+      labels:
+        app: frontendsvc
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id:  "frontendsvc"
+    spec:
+      containers:
+        - name: frontendsvc
+          image: ko.local/frontendsvc:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_PORT
+              value: "8080"
+            - name: ORDERS_PUBSUB
+              value: "orders-pubsub"
+            - name: ORDERS_PUBSUB_TOPIC
+              value: "received-orders"
+
+          imagePullPolicy: IfNotPresent
