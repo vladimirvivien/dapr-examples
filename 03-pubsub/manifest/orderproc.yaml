@@ -26,9 +26,13 @@ spec:
           env:
             - name: APP_PORT
               value: "6060"
+            - name: ORDERS_STORE
+              value: "orders-store"
             - name: ORDERS_PUBSUB
               value: "orders-pubsub"
             - name: ORDERS_PUBSUB_TOPIC
               value: "received-orders"
+            - name: ORDERS_PUBSUB_ROUTE
+              value: "/received-orders"
 
           imagePullPolicy: IfNotPresent

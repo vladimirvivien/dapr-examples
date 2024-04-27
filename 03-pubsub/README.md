@@ -1,51 +1,59 @@
 ## Dapr Publish/Subscribe
 
-This example demonstrates how to create and deploy a Dapr-managed service that can be invoked from the `frontend` application. 
+This example demonstrates how to create a Dapr application that can handle message events using a publish/subscribe component. 
 
 ### Pre-requisites
-Refer to example [01-state-management](../01-state-management/README.md) for an introduction on how to setup the the `frontend` application.
+* Refer to example [01-state-management](../01-state-management/README.md) for an introduction on how to setup the the `frontend` application.
+
+* Review example [02-invoke-service](../02-invoke-service/) to see how the application uses Dapr's service invocation to generate order IDs.
+
 
 ### The Go application
+This example modifies application `frontend` to delegate the process of creating/saving orders in the following ways:
+- The example introduces a Redis-back pub/sub component
+- When a new order comes in, the application invokes `genidsvc` to generate the order ID
+- The application saves (in Redis store) the new order 
+- The orderID is then published to an event topic (`orders-received`) backed by Redis
+- The new [`orderprocsvc`](./orderprocsvc/) service (this example) subscribes to the topic 
+- When an orderID is received, the service retrieves the order, updates it, and saves it back in the Redis store
 
-In the previous [example](../01-state-management/), application `frontend` was setup with two endpoints: 
-- One endpoint to save an order 
-- The other endpoint to retrieve a saved order
+This sequence is illustrated in the figure below.
 
-In the previous example, the application's code handles all of the logic necessary to drive the order in one function.
-
-This example, however, extracts the functionality that generates the order ID and places it in a new stand-alone service called `genid`. 
-Now, when an order request is received, the frontendsvc application will invoke the `genidsvc` service using the Dapr Service Invocation feature,
-to gegnerate a UUID value that can subsequently be used as the order id. 
-
-![Simple service](./02-dapr-invoke-service.png)
+![Pubsub](./03-pubsub.png)
 
 
-### The `genid` service source code
+### The `orderprocsvc` service source code
 
-The code for this example uses the Dapr API to declare and start a service endpoint. Let's see how that is done below.
+The code introduced in this example uses the Dapr API to declare and start a service with a topic event handler to receive incoming order IDs published by the `frontend` service. The code also creates a Dapr client that is used to save the updated state of the order in the Redis store.
+
+Let's see how that is done below.
 
 First, let's define some variables and types:
 
 ```go
 var (
-	appPort    = os.Getenv("APP_PORT") // service port
+	daprClient dapr.Client
+	appPort    = os.Getenv("APP_PORT")
+	pubsub     = os.Getenv("ORDERS_PUBSUB")
+	topic      = os.Getenv("ORDERS_PUBSUB_TOPIC")
 )
 ```
 
-The next code snippet defines and start the service using the Dapr API.:
+The next code snippet defines a subscription to the topic with order events. The code also sets up a service and registers the handler that will be triggered when an event arrives on the specified topic.
 
 ```go
 func main() {
-	dapr := daprd.NewService(fmt.Sprintf(":%s", appPort))
-
-	// Define service endpoint /genid
-	if err := dapr.AddServiceInvocationHandler("/genid", generateId); err != nil {
-		log.Fatalf("genid: invocation handler setup: %v", err)
+	// define subscription
+	rcvdSub := &common.Subscription{
+		PubsubName: pubsub,
+		Topic:      topic,
+		Route:      topic,
 	}
 
-	// start the service
-	if err := dapr.Start(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("genid start: %v", err)
+	// Create service
+	s := daprd.NewService(fmt.Sprintf(":%s", appPort))
+	if err := s.AddTopicEventHandler(rcvdSub, subHandler); err != nil {
+		log.Fatalf("orderproc: topic subscription: %v", err)
 	}
 }
 ```
@@ -104,6 +112,7 @@ Nowe we can create OCI-compliant images using `ko` (note: update the `--platform
 ```
 ko build --local -B --platform=linux/arm64 ./frontendsvc
 ko build --local -B --platform=linux/arm64 ./genidsvc
+ko build --local -B --platform=linux/arm64 ./orderprocsvc
 ```
 
 Next, check to see if the images are in your local repository:
@@ -114,6 +123,8 @@ docker images
 REPOSITORY             TAG              IMAGE ID       CREATED         SIZE
 ko.local/frontendsvc   latest           78e50b346643   10 days ago     17.2MB
 ko.local/genidsvc      latest           a957b45ffa1d   10 days ago     17.4MB
+ko.local/orderprocsvc  latest           89f4f84441f7   2 weeks ago     17.4MB
+
 ```
 
 Next, add the latest built image into your local Kind cluster:
@@ -132,58 +143,49 @@ docker exec -it dapr-cluster-control-plane crictl images
 IMAGE                  TAG                  IMAGE ID            SIZE
 ko.local/frontendsvc   latest               78e50b346643d       17.7MB
 ko.local/genidsvc      latest               a957b45ffa1dc       17.9MB
+ko.local/orderprocsvc  latest               89f4f84441f7f       17.9MB
 ```
 ### Kubernetes configuration
-In this example, we will have three YAML configurations to deploy:
+In this example, we will use the following YAML configurations:
 * A Kubernetes [Deployment](./manifest/frontend.yaml) manifest for `frontendsvc`
 * A Kubernetes [Deployment](./manifest/genid.yaml) manifest for `genidsvc`
-* A Dapr Component for a [Redis data store](./manifest/redis-store.yaml).
+* A Kubernetes [Deployment](./manifest/orderproc.yaml) manifest for `orderprocsvc`
+* A Dapr Component for a [Redis data store](./manifest/redis-store.yaml)
+* A Dapr Component for a [Redis pub/sub](./manifest/redis-pubsub.yaml).
 
-Because application services `frontendsvc` and `genidsvc` use the Dapr API directly, their Kubernetes deployments must include the Dapr sidecar at runtime.
 
-The following shows a snippet for the [`frontendsvc`](./manifest/frontend.yaml) application that includes annotations that will cause the injection of the Dapr runtime sidecar container:
+Because theh `procordersvc` application service uses the Dapr API directly, its Kubernetes deployments must include the Dapr sidecar as shown in the following snippet:
 
+Manifest [orderproc.yaml](./manifest/orderproc.yaml)
 ```yaml
 kind: Deployment
 metadata:
-  name: frontendsvc
+  name: orderprocsvc
 spec:
 ...
   template:
     metadata:
       labels:
-        app: frontendsvc
+        app: orderprocsvc
       annotations:
         dapr.io/enabled: "true"
-        dapr.io/app-id:  "frontendsvc"
-```
-Similarly, the deployment for the `genidsvc` service includes annotations for its Dapr sidecar.
-Note the `dapr.io/app-port: "5050"`: this is to configure the sidecar to be able to reach the `genidsvc` service on its listening port.
-The annotation `app-port` value matches the exposed port of the application's  `containerPort value` as shown below.
-
-```yaml
-kind: Deployment
-metadata:
-  name: genidsvc
-spec:
-...
-  template:
-    metadata:
-      labels:
-        app: genidsvc
-      annotations:
-        dapr.io/enabled: "true"
-        dapr.io/app-id:  "genidsvc"
+        dapr.io/app-id:  "orderprocsvc"
         dapr.io/app-port: "5050"
     spec:
       containers:
-        - name: genidsvc
-          image: ko.local/genidsvc:latest
+        - name: orderprocsvc
+          image: ko.local/orderprocsvc:latest
           ports:
             - containerPort: 5050
+          env:
+            - name: APP_PORT
+              value: "6060"
+            - name: ORDERS_PUBSUB
+              value: "orders-pubsub"
+            - name: ORDERS_PUBSUB_TOPIC
+              value: "received-orders"
 ```
-
-You can read more about running Dapr-enabled applications on Kubernetes [here](https://docs.dapr.io/operations/hosting/kubernetes/).
+Notice in the deployment, the environment variables are used to configure the names of the pubsub service and its topic.
 
 ### Deploy the application
 The next step is to deploy the application to the Kubernetes cluster:
@@ -199,13 +201,14 @@ First, ensure the Dapr components are deployed properly in the cluster:
 ```
 kubectl get components
 
-NAME           AGE
-orders-store   72m
+NAME            AGE
+orders-pubsub   20s
+orders-store    20s
 ```
 
-We see component `order-store` is deployed with no problem.
+We see components `order-store` and `order-pubsub` are deployed with no problem.
 
-Next, ensure the application pod is deployed in the cluster:
+Next, ensure the application pods are deployed in the cluster:
 
 ```
 kubectl get deployments -l app=frontendsvc -o wide
@@ -216,18 +219,20 @@ frontendsvc   1/1     1            1           75m   frontendsvc   ko.local/fron
 kubectl get deployments -l app=genidsvc -o wide
 NAME       READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                     SELECTOR
 genidsvc   1/1     1            1           46s   genidsvc     ko.local/genidsvc:latest   app=genidsvc
+
+kubectl get deployments -l app=orderprocsvc -o wide
+NAME           READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS     IMAGES                         SELECTOR
+orderprocsvc   1/1     1            1           19m   orderprocsvc   ko.local/orderprocsvc:latest   app=orderprocsvc
 ```
 
 Lastly, let's check that there are 2 containers running in the deployed application pods (one for the app and the other for the Dapr sidecar):
 
 ```
-kubectl get pods -l app=frontendsvc
-NAME                           READY   STATUS    RESTARTS   AGE
-frontendsvc-7c6bb8bf87-kpgvk   2/2     Running   0          3m3s
-
-kubectl get pods -l app=genidsvc
-NAME                       READY   STATUS    RESTARTS   AGE
-genidsvc-74b5459ff-mbh6r   2/2     Running   0          2m9
+kubectl get pods 
+NAME                            READY   STATUS    RESTARTS        AGE
+frontendsvc-5dc48f44dc-n4xmj    2/2     Running   7 (111s ago)    20m
+genidsvc-5645f6d8d-ppfwt        2/2     Running   4 (2m9s ago)    20m
+orderprocsvc-5cbbb96688-4vn4v   2/2     Running   8 (81s ago)     20m
 ```
 
 ### Running the application
@@ -261,18 +266,17 @@ Note that the order id has now UUID suffix attached to it now.
 Next, let's use endpoint `http://localhost:8080/orders/order/{id}` to retrieve the order from the state store:
 
 ```
-curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b"
-
+curl -i  -H "Content-type: application/json" "http://localhost:8080/orders/order/order-1a768924-4d85-4e72-94df-98541f26225e"
 HTTP/1.1 200 OK
 Content-Type: application/json
-Date: Mon, 08 Apr 2024 13:16:46 GMT
-Content-Length: 91
+Date: Sat, 27 Apr 2024 18:47:11 GMT
+Content-Length: 108
 ```
 
 The result is a JSON-encoded data for the order:
 
 ```json
-{"ID":"order-e4e6240e-62a4-496d-9e2f-b20f4f5bab0b","Items":["automobile"],"Completed":true}
+{"ID":"order-1a768924-4d85-4e72-94df-98541f26225e","Items":["automobile"],"Received":true,"Completed":true}
 ```
 
 ### Troubleshooting
@@ -283,6 +287,7 @@ Review the Dapr sidecar container logs for the services
 ```
 kubectl logs -l app=frontend -c daprd
 kubectl logs -l app=genidsvc -c daprd
+kubectl logs -l app=orderprocsvc -c daprd
 ```
 
 Review the logs for the application services
@@ -290,4 +295,5 @@ Review the logs for the application services
 ```
 kubectl logs -l app=frontend 
 kubectl logs -l app=genidsvc
+kubectl logs -l app=orderprocsvc
 ```

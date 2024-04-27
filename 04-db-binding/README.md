@@ -1,9 +1,13 @@
 ## Dapr DB Binding
 
-This example demonstrates how to use the Binding component to save (output) data into a MySQL database. 
+This example demonstrates how to use the Binding component to save (output) data into a MySQL database.  
 
 ### Pre-requisites
-Refer to example [01-state-management](../01-state-management/README.md) for an introduction on how to setup the the `frontend` application.
+* Refer to example [01-state-management](../01-state-management/README.md) for an introduction on how to setup the the `frontend` application.
+
+* Review example [02-invoke-service](../02-invoke-service/) to see how the application uses Dapr's service invocation to generate order IDs.
+
+* Review example [03-pubsub](../03-pubsub/) to see how the application sends new orderIDs using Dapr's publish/subscribe component.
 
 ### Database setup
 For this example, you will need to setup a database to receive the orders. To keep things simple, the example uses a MySQL database instance installed using a Helm chart.

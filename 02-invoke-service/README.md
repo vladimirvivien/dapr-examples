@@ -8,10 +8,11 @@ Refer to example [01-state-management](../01-state-management/README.md) for an 
 ### The Go application
 
 In the previous [example](../01-state-management/), application `frontend` was setup with two endpoints: 
+
 - One endpoint to save an order 
 - The other endpoint to retrieve a saved order
 
-In the previous example, the application's code handles all of the logic necessary to drive the order in one function.
+Application `frontend`'s code handles all of the logic necessary to drive the order.
 
 This example, however, extracts the functionality that generates the order ID and places it in a new stand-alone service called `genid`. 
 Now, when an order request is received, the frontendsvc application will invoke the `genidsvc` service using the Dapr Service Invocation feature,

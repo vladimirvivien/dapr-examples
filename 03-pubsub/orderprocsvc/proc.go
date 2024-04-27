@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,13 +11,16 @@ import (
 	dapr "github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprd "github.com/dapr/go-sdk/service/http"
+	"github.com/vladimirvivien/daprexamples/types"
 )
 
 var (
 	daprClient dapr.Client
 	appPort    = os.Getenv("APP_PORT")
+	stateStore = os.Getenv("ORDERS_STORE")
 	pubsub     = os.Getenv("ORDERS_PUBSUB")
 	topic      = os.Getenv("ORDERS_PUBSUB_TOPIC")
+	route      = os.Getenv("ORDERS_PUBSUB_ROUTE")
 )
 
 func main() {
@@ -29,12 +33,15 @@ func main() {
 	if topic == "" {
 		topic = "orders"
 	}
+	if stateStore == "" {
+		stateStore = "orders-store"
+	}
 
 	// define subscription
 	rcvdSub := &common.Subscription{
 		PubsubName: pubsub,
 		Topic:      topic,
-		Route:      topic,
+		Route:      route,
 	}
 
 	// Create service
@@ -61,6 +68,41 @@ func main() {
 }
 
 func subHandler(ctx context.Context, event *common.TopicEvent) (retry bool, err error) {
-	log.Printf("Subscriber received: %#v", event)
+	orderID, ok := event.Data.(string)
+	if !ok {
+		err = fmt.Errorf("orders-pubsub: event: unexpected data type: %T", event.Data)
+		log.Print(err.Error())
+		return false, err
+	}
+
+	log.Printf("orders-pubsub: event received: orderID: %s", orderID)
+	orderItem, err := daprClient.GetState(ctx, stateStore, orderID, nil)
+	if err != nil {
+		log.Printf("orders-pubsub: getstate: %s", err)
+		return true, err
+	}
+
+	// retrieve and update order
+	var order types.Order
+	if err := json.Unmarshal(orderItem.Value, &order); err != nil {
+		log.Printf("orders-pubsub: unmarshal: %s", err)
+		return false, err
+	}
+	order.Completed = true
+
+	// save updated order
+	orderData, err := json.Marshal(order)
+	if err != nil {
+		log.Printf("orders-pubsub: marshal: %s", err)
+		return false, err
+	}
+
+	if err := daprClient.SaveState(ctx, stateStore, orderID, orderData, nil); err != nil {
+		log.Printf("orders-pubsub: save state: %s", err)
+		return true, err
+	}
+
+	log.Printf("orders-pubsub: order update: id: %s", orderID)
+
 	return false, nil
 }
