@@ -76,16 +76,17 @@ func subHandler(ctx context.Context, event *common.TopicEvent) (retry bool, err 
 	}
 
 	log.Printf("orders-pubsub: event received: orderID: %s", orderID)
+
+	// retrieve and update order
 	orderItem, err := daprClient.GetState(ctx, stateStore, orderID, nil)
 	if err != nil {
 		log.Printf("orders-pubsub: getstate: %s", err)
 		return true, err
 	}
 
-	// retrieve and update order
 	var order types.Order
 	if err := json.Unmarshal(orderItem.Value, &order); err != nil {
-		log.Printf("orders-pubsub: unmarshal: %s", err)
+		log.Printf("orders-pubsub: unmarshal: %s: %s", err, orderItem.Value)
 		return false, err
 	}
 	order.Completed = true
